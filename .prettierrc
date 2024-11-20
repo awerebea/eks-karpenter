@@ -1,0 +1,25 @@
+{
+  "useTabs": false,
+  "parser": "json",
+  "printWidth": 88,
+  "overrides": [
+    {
+      "files": [
+        "*.json"
+      ],
+      "options": {
+        "printWidth": 2,
+        "tabWidth": 2
+      }
+    },
+    {
+      "files": [
+        ".prettierrc*"
+      ],
+      "options": {
+        "printWidth": 2,
+        "tabWidth": 2
+      }
+    }
+  ]
+}
