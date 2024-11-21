@@ -215,19 +215,6 @@ resource "aws_iam_instance_profile" "karpenter" {
 }
 
 # Karpenter Helm
-provider "helm" {
-  kubernetes {
-    host                   = aws_eks_cluster.cluster.endpoint
-    cluster_ca_certificate = base64decode(aws_eks_cluster.cluster.certificate_authority[0].data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      args        = ["eks", "get-token", "--cluster-name", aws_eks_cluster.cluster.id]
-      command     = "aws"
-    }
-  }
-}
-
 resource "helm_release" "karpenter" {
   namespace        = "karpenter"
   create_namespace = true
