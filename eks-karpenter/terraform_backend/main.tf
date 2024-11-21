@@ -3,19 +3,25 @@ locals {
   dynamodb = "terraform-state-lock"
   profile  = "my-profile"
   region   = "us-east-2"
+  project  = "opsfleet-assignment"
 }
 
 provider "aws" {
   profile = local.profile
   region  = local.region
+  default_tags {
+    tags = {
+      project = local.project
+      purpose = "Terraform backend"
+    }
+  }
 }
 
 resource "aws_s3_bucket" "tf_state" {
   bucket = local.bucket
 
   tags = {
-    Name    = "Terraform State Bucket"
-    Project = var.project_name
+    Name = "Terraform State Bucket"
   }
 }
 
@@ -47,8 +53,7 @@ resource "aws_dynamodb_table" "tf_state_lock" {
   }
 
   tags = {
-    Name    = "Terraform State Lock Table"
-    Project = var.project_name
+    Name = "Terraform State Lock Table"
   }
 }
 

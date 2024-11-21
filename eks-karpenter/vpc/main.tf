@@ -5,8 +5,7 @@ resource "aws_vpc" "main" {
   enable_dns_hostnames = true
 
   tags = {
-    Name    = "main"
-    Project = var.project_name
+    Name = "main"
   }
 }
 
@@ -14,8 +13,7 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name    = "igw"
-    Project = var.project_name
+    Name = "igw"
   }
 }
 
@@ -26,7 +24,6 @@ resource "aws_subnet" "private-az1" {
 
   tags = {
     Name                                        = "private-${var.aws_az1}"
-    Project                                     = var.project_name
     "kubernetes.io/role/internal-elb"           = "1"
     "kubernetes.io/cluster/${var.project_name}" = "owned"
   }
@@ -39,7 +36,6 @@ resource "aws_subnet" "private-az2" {
 
   tags = {
     Name                                        = "private-${var.aws_az2}"
-    Project                                     = var.project_name
     "kubernetes.io/role/internal-elb"           = "1"
     "kubernetes.io/cluster/${var.project_name}" = "owned"
   }
@@ -53,7 +49,6 @@ resource "aws_subnet" "public-az1" {
 
   tags = {
     Name                                        = "public-${var.aws_az1}"
-    Project                                     = var.project_name
     "kubernetes.io/role/elb"                    = "1"
     "kubernetes.io/cluster/${var.project_name}" = "owned"
   }
@@ -67,7 +62,6 @@ resource "aws_subnet" "public-az2" {
 
   tags = {
     Name                                        = "public-${var.aws_az2}"
-    Project                                     = var.project_name
     "kubernetes.io/role/elb"                    = "1"
     "kubernetes.io/cluster/${var.project_name}" = "owned"
   }
@@ -77,8 +71,7 @@ resource "aws_eip" "nat" {
   domain = "vpc"
 
   tags = {
-    Name    = "nat"
-    Project = var.project_name
+    Name = "nat"
   }
 }
 
@@ -87,8 +80,7 @@ resource "aws_nat_gateway" "nat" {
   subnet_id     = aws_subnet.public-az1.id
 
   tags = {
-    Name    = "nat"
-    Project = var.project_name
+    Name = "nat"
   }
 
   depends_on = [aws_internet_gateway.igw]
@@ -103,8 +95,7 @@ resource "aws_route_table" "private" {
   }
 
   tags = {
-    Name    = "private"
-    Project = var.project_name
+    Name = "private"
   }
 }
 
@@ -117,8 +108,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name    = "public"
-    Project = var.project_name
+    Name = "public"
   }
 }
 
