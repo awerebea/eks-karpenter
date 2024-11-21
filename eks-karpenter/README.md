@@ -121,6 +121,12 @@ Now, go to the `./k8s_demo` directory and create deployments:
 ```sh
 kubectl apply -f deployment-arm.yaml
 ```
+
+You can either use the AWS Management Console to explore EC2 instances, or you can retrieve and filter information about provisioned nodes directly using the following command:
+```sh
+kubectl get nodes --no-headers | while IFS= read -r node ; do kubectl describe node "$(echo "$node" | cut -d' ' -f1)" | grep -E 'node.kubernetes.io/instance-type=|kubernetes.io/hostname='; done
+```
+
 You should see that a `t4g` instance (with **Graviton** ARM CPU) is provisioned, as the deployment manifest specifies `arm64` as the platform.
 
 Next, create a deployment with the `x86` (`amd64`) platform specified:
