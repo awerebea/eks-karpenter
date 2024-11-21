@@ -85,7 +85,10 @@ resource "aws_eks_cluster" "cluster" {
 
   provisioner "local-exec" {
     command = <<EOT
-      aws eks update-kubeconfig --region ${var.aws_region} --name ${aws_eks_cluster.cluster.name}
+      aws eks update-kubeconfig \
+          --region ${var.aws_region} \
+          --name ${aws_eks_cluster.cluster.name} \
+          --profile ${var.aws_profile}
     EOT
   }
 }
