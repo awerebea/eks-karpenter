@@ -22,6 +22,46 @@ resource "aws_iam_role_policy_attachment" "amazon-eks-cluster-policy" {
   role       = aws_iam_role.eks-cluster.name
 }
 
+# VPC resources are expected to exist prior to deploying this Terraform module.
+# Use subnet IDs from the provided variable, or fallback to remote state data if not specified.
+locals {
+  subnets_are_unspecified = anytrue([for value in values(var.subnet_ids) : value == ""])
+}
+
+data "terraform_remote_state" "vpc" {
+  count   = local.subnets_are_unspecified ? 1 : 0
+  backend = "s3"
+  config = {
+    bucket  = "terraform-states-opsfleet-assignment-495599757520-us-east-2"
+    key     = "vpc/terraform.tfstate"
+    region  = var.aws_region
+    profile = var.aws_profile
+  }
+}
+
+locals {
+  private-subnet-az1 = (
+    local.subnets_are_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.private-subnet-az1
+    : var.subnet_ids["private-subnet-az1"]
+  )
+  private-subnet-az2 = (
+    local.subnets_are_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.private-subnet-az2
+    : var.subnet_ids["private-subnet-az2"]
+  )
+  public-subnet-az1 = (
+    local.subnets_are_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.public-subnet-az1
+    : var.subnet_ids["public-subnet-az1"]
+  )
+  public-subnet-az2 = (
+    local.subnets_are_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.public-subnet-az2
+    : var.subnet_ids["public-subnet-az2"]
+  )
+}
+
 resource "aws_eks_cluster" "cluster" {
   name     = var.project_name
   role_arn = aws_iam_role.eks-cluster.arn
@@ -33,13 +73,11 @@ resource "aws_eks_cluster" "cluster" {
     endpoint_public_access  = true
     public_access_cidrs     = ["0.0.0.0/0"]
 
-    # VPC resources are expected to exist prior to deploying this Terraform module.
-    # Use remote state data or hardcode the subnet IDs as needed.
     subnet_ids = [
-      data.terraform_remote_state.vpc.outputs.private-subnet-az1,
-      data.terraform_remote_state.vpc.outputs.private-subnet-az2,
-      data.terraform_remote_state.vpc.outputs.public-subnet-az1,
-      data.terraform_remote_state.vpc.outputs.public-subnet-az2,
+      local.private-subnet-az1,
+      local.private-subnet-az2,
+      local.public-subnet-az1,
+      local.public-subnet-az2,
     ]
   }
 
@@ -90,8 +128,8 @@ resource "aws_eks_node_group" "private-nodes" {
   # version         = "1.31" # Defaults to EKS Cluster Kubernetes version.
 
   subnet_ids = [
-    data.terraform_remote_state.vpc.outputs.private-subnet-az1,
-    data.terraform_remote_state.vpc.outputs.private-subnet-az2,
+    local.private-subnet-az1,
+    local.private-subnet-az2,
   ]
 
   capacity_type  = "ON_DEMAND"
