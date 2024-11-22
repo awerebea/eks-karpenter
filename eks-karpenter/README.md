@@ -1,4 +1,4 @@
-# Setting up an EKS Cluster with Karpenter
+# Automate EKS cluster setup with Karpenter and Graviton on AWS
 
 ## Description
 
@@ -19,7 +19,7 @@ This repository contains all the required Terraform code for provisioning an EKS
 - `terraform_backend`: Deploys an S3 bucket and DynamoDB table for managing remote `tfstate` files.
 - `vpc`: Deploys the network resources (VPC, subnets, etc.).
 
-If you'd like to use an existing VPC, you can specify the IDs of the private and public subnets directly in the `variables.tf` file within the `eks` module.
+If you'd like to use an existing VPC, you can specify the IDs of the VPC and subnets directly in the locals block of `main.tf` file within the `eks` module.
 
 ### Prerequisites
 
@@ -30,7 +30,7 @@ Ensure the the following tools are installed:
 - [Kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [Helm](https://helm.sh/docs/intro/install/)
 
-Additionally, configure your AWS profile to access the appropriate account. For example, this README assumes the profile is named `my-profile`, but you can use any profile name you prefer.
+Additionally, ensure that the required environment variables are exported to grant access to the AWS account and specify the region to be used.
 
 ### Steps to Deploy
 
@@ -41,8 +41,6 @@ Additionally, configure your AWS profile to access the appropriate account. For 
    locals {
      bucket   = "terraform-states-opsfleet-assignment-495599757520-us-east-2"
      dynamodb = "terraform-state-lock"
-     profile  = "my-profile"
-     region   = "us-east-2"
      project  = "opsfleet-assignment"
    }
 
@@ -55,7 +53,7 @@ Additionally, configure your AWS profile to access the appropriate account. For 
 #### II. Deploy VPC-related Resources (Optional)
 
 1. Navigate to the `./vpc/` directory and update the backend.tf file with the terraform_backend configuration.
-2. Update the variable values in variables.tf accordingly.
+2. In the `main.tf` file, update the `locals` block with the appropriate values for your environment.
 3. Initialize Terraform and deploy the VPC resources:
    ```sh
    terraform init
@@ -64,49 +62,49 @@ Additionally, configure your AWS profile to access the appropriate account. For 
 
 #### III. Deploy EKS Cluster with Karpenter Autoscaler
 1. Navigate to the `./eks/` directory and update the backend.tf file to reflect the terraform_backend configuration.
-2. Update the `variables.tf` file with the appropriate values. If you're using an existing VPC (bypassing step II), specify the subnet IDs there. Example:
+2. In the `main.tf` file, update the `locals` block with the appropriate values for your environment.
+   If you're using an existing VPC (bypassing Step II), specify the VPC and subnet IDs in this block as shown in the example below:
    ```terraform
-   variable "subnet_ids" {
-     description = "List of Subnet IDs. If empty, the data will be retrieved from the remote state."
-     type        = map(string)
-     default = {
-       private-subnet-az1 = "subnet-0123456789abcdef1",
-       private-subnet-az2 = "subnet-0123456789abcdef2",
-       public-subnet-az1  = "subnet-0123456789abcdef3",
-       public-subnet-az2  = "subnet-0123456789abcdef4",
-     }
+   locals {
+     ...
+     vpc_id          = "vpc-0123456789abcdef0"
+     private_subnets = ["subnet-0123456789abcdef1", "subnet-0123456789abcdef2"]
+     intra_subnets   = ["subnet-0123456789abcdef3", "subnet-0123456789abcdef4"]
+     ...
    }
    ```
-3. If necessary, update the `cluster_name` value in the `values.yaml` file located in `./eks/karpenter-provisioner-chart/` to match the name of your EKS cluster.
 4. Initialize Terraform and deploy the resources:
    ```sh
    terraform init
    terraform apply
    ```
 
-During the deployment, two Helm charts will be installed:
-
-- The latest version of `Karpenter` from its official repository.
-- A custom Helm chart (`karpenter-provisioner-chart`) that deploys a custom resource called a "Provisioner," which specifies provisioning configuration.
-To modify the provisioning configuration (e.g., instance types), you can update the `karpenter-provisioner.yaml` template and upgrade the chart. For instance, to extend the list of allowed instance types, modify the `spec.requirements` section as shown below:
+To modify the provisioning configuration (e.g., instance types), update the specification of the `kubectl_manifest.karpenter_node_pool` resource and re-apply the Terraform code.
+For example, to extend the list of allowed instance types, adjust the `spec.requirements` section as shown below:
 ```yaml
   requirements:
     ...
-  - key: karpenter.k8s.aws/instance-family
+  - key: "karpenter.k8s.aws/instance-family"
     operator: In
     values: ["t4g", "m6g", "m8g", "m8g", "r6g", "c6g", "c7g", "c8g", "t2", "t3", "m4", "m5"]
-  - key: karpenter.k8s.aws/instance-size
+  - key: "karpenter.k8s.aws/instance-cpu"
     operator: In
-    values: ["nano", "micro", "small", "medium", "large", "xlarge", "2xlarge", "4xlarge", "8xlarge"]
+    values: ["1", "2", "4", "8", "16"]
     ...
 
 ```
-Then, upgrade the Helm chart:
-```sh
-helm upgrade karpenter-provisioner ./karpenter-provisioner-chart
-```
 
 ### Demo: Automatic Node Provisioning
+When you just getting started with Karpenter, it's a good idea to check logs in case you get any **errors**.
+```sh
+kubectl logs -f -n kube-system -l app.kubernetes.io/name=karpenter
+```
+If you encounter the following error message:
+```
+AuthFailure.ServiceLinkedRoleCreationNotPermitted: The provided credentials do not have permission to create the service-linked role for EC2 Spot Instances.
+```
+This indicates that your credentials lack the necessary permissions to create the service-linked role for EC2 Spot Instances. To resolve this issue, follow the detailed steps in the [troubleshooting guide](https://karpenter.sh/docs/troubleshooting/#missing-service-linked-role).
+
 Track the existing pods in the cluster by running:
 ```sh
 watch -n 1 -t kubectl get pods
@@ -143,11 +141,12 @@ kubectl scale deployment nginx-deployment-arm --replicas=5
 As you scale the deployments, `Karpenter` will provision or terminate nodes as needed.
 
 Finally, delete the deployments and observe that Karpenter will terminate the provisioned nodes after the specified in
-`karpenter-provisioner-chart` timeout (in this example 60 seconds):
+`karpenter_node_pool` manifest timeout (in this example 30 seconds):
 ```sh
 kubectl delete deployments nginx-deployment-x86 nginx-deployment-arm
 ```
 
 ### References
-- [Kubernetes Node Autoscaling with Karpenter](https://antonputra.com/amazon/kubernetes-node-autoscaling-with-karpenter)
-- [Setting Up an EKS Cluster with Karpenter on Graviton Processors](https://www.stackgenie.io/setting-up-an-eks-cluster-with-karpenter-on-graviton-processors/)
+- [Deploy Karpenter v0.32.1 in AWS EKS](https://medium.com/@takebsd/deploy-karpenter-v0-32-1-in-aws-eks-ba16dc550443)
+- [terraform-aws-modules/terraform-aws-eks](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/karpenter)
+- [Karpenter API v1 migration](https://karpenter.sh/docs/upgrading/v1-migration/)
