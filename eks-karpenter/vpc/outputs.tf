@@ -1,15 +1,15 @@
-output "private-subnet-az1" {
-  value = aws_subnet.private-az1.id
+################################################################################
+# VPC
+################################################################################
+
+output "intra_subnets" {
+  value = module.vpc.intra_subnets
 }
 
-output "private-subnet-az2" {
-  value = aws_subnet.private-az2.id
+output "private_subnets" {
+  value = module.vpc.private_subnets
 }
 
-output "public-subnet-az1" {
-  value = aws_subnet.public-az1.id
-}
-
-output "public-subnet-az2" {
-  value = aws_subnet.public-az2.id
+output "vpc_id" {
+  value = module.vpc.vpc_id
 }

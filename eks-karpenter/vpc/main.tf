@@ -1,133 +1,49 @@
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-
-  tags = {
-    Name = "main"
+provider "aws" {
+  region = local.region
+  default_tags {
+    tags = {
+      project    = local.name
+      managed_by = "Terraform"
+    }
   }
 }
 
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.main.id
+data "aws_availability_zones" "available" {}
 
-  tags = {
-    Name = "igw"
-  }
+locals {
+  name   = "opsfleet-assignment"
+  region = "us-east-2"
+
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 2)
+
+  tags = {} # Use AWS provider default_tags instead to tag all taggable resources
 }
 
-resource "aws_subnet" "private-az1" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.10.0/24"
-  availability_zone = var.aws_az1
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
 
-  tags = {
-    Name                                        = "private-${var.aws_az1}"
-    "kubernetes.io/role/internal-elb"           = "1"
-    "kubernetes.io/cluster/${var.project_name}" = "owned"
-  }
-}
+  name = local.name
+  cidr = local.vpc_cidr
 
-resource "aws_subnet" "private-az2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.11.0/24"
-  availability_zone = var.aws_az2
+  azs             = local.azs
+  intra_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 20)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 30)]
 
-  tags = {
-    Name                                        = "private-${var.aws_az2}"
-    "kubernetes.io/role/internal-elb"           = "1"
-    "kubernetes.io/cluster/${var.project_name}" = "owned"
-  }
-}
+  enable_nat_gateway = true
+  single_nat_gateway = true
 
-resource "aws_subnet" "public-az1" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.20.0/24"
-  availability_zone       = var.aws_az1
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name                                        = "public-${var.aws_az1}"
-    "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/${var.project_name}" = "owned"
-  }
-}
-
-resource "aws_subnet" "public-az2" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.21.0/24"
-  availability_zone       = var.aws_az2
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name                                        = "public-${var.aws_az2}"
-    "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/${var.project_name}" = "owned"
-  }
-}
-
-resource "aws_eip" "nat" {
-  domain = "vpc"
-
-  tags = {
-    Name = "nat"
-  }
-}
-
-resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public-az1.id
-
-  tags = {
-    Name = "nat"
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
   }
 
-  depends_on = [aws_internet_gateway.igw]
-}
-
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat.id
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+    # Tags subnets for Karpenter auto-discovery
+    "karpenter.sh/discovery" = local.name
   }
 
-  tags = {
-    Name = "private"
-  }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
-  }
-
-  tags = {
-    Name = "public"
-  }
-}
-
-resource "aws_route_table_association" "private-az1" {
-  subnet_id      = aws_subnet.private-az1.id
-  route_table_id = aws_route_table.private.id
-}
-
-resource "aws_route_table_association" "private-az2" {
-  subnet_id      = aws_subnet.private-az2.id
-  route_table_id = aws_route_table.private.id
-}
-
-resource "aws_route_table_association" "public-az1" {
-  subnet_id      = aws_subnet.public-az1.id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table_association" "public-az2" {
-  subnet_id      = aws_subnet.public-az2.id
-  route_table_id = aws_route_table.public.id
+  tags = local.tags
 }

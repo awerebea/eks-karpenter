@@ -1,255 +1,278 @@
-resource "aws_iam_role" "eks-cluster" {
-  name = "eks-cluster"
-
-  assume_role_policy = <<POLICY
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "eks.amazonaws.com"
-      },
-      "Action": "sts:AssumeRole"
+provider "aws" {
+  region = local.region
+  default_tags {
+    tags = {
+      project    = local.name
+      managed_by = "Terraform"
     }
-  ]
-}
-POLICY
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "amazon-eks-cluster-policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-  role       = aws_iam_role.eks-cluster.name
+provider "aws" {
+  region = "us-east-1"
+  alias  = "virginia"
 }
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      # This requires the awscli to be installed locally where Terraform is executed
+      args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
+  }
+}
+
+provider "kubectl" {
+  apply_retry_count      = 5
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  load_config_file       = false
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    # This requires the awscli to be installed locally where Terraform is executed
+    args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+  }
+}
+
+data "aws_availability_zones" "available" {}
+data "aws_ecrpublic_authorization_token" "token" {
+  provider = aws.virginia
+}
+
+locals {
+  name   = "opsfleet-assignment"
+  region = "us-east-2"
+
+  # Provide VPC data here, or leave it empty to retrieve it from the remote state (see details below).
+  vpc_id          = ""
+  private_subnets = []
+  intra_subnets   = []
+  network_is_unspecified = (
+    local.vpc_id == "" ||
+    length(local.private_subnets) == 0 ||
+    length(local.intra_subnets) == 0
+  )
+
+  tags = {} # Use AWS provider default_tags instead to tag all taggable resources
+}
+
+################################################################################
+# EKS Module
+################################################################################
 
 # VPC resources are expected to exist prior to deploying this Terraform module.
 # Use subnet IDs from the provided variable, or fallback to remote state data if not specified.
-locals {
-  subnets_are_unspecified = anytrue([for value in values(var.subnet_ids) : value == ""])
-}
-
 data "terraform_remote_state" "vpc" {
-  count   = local.subnets_are_unspecified ? 1 : 0
+  count   = local.network_is_unspecified ? 1 : 0
   backend = "s3"
   config = {
-    bucket  = "terraform-states-opsfleet-assignment-495599757520-us-east-2"
-    key     = "vpc/terraform.tfstate"
-    region  = var.aws_region
-    profile = var.aws_profile
+    bucket = "terraform-states-opsfleet-assignment-495599757520-us-east-2"
+    key    = "vpc/terraform.tfstate"
+    region = local.region
   }
 }
 
-locals {
-  private-subnet-az1 = (
-    local.subnets_are_unspecified
-    ? data.terraform_remote_state.vpc[0].outputs.private-subnet-az1
-    : var.subnet_ids["private-subnet-az1"]
-  )
-  private-subnet-az2 = (
-    local.subnets_are_unspecified
-    ? data.terraform_remote_state.vpc[0].outputs.private-subnet-az2
-    : var.subnet_ids["private-subnet-az2"]
-  )
-  public-subnet-az1 = (
-    local.subnets_are_unspecified
-    ? data.terraform_remote_state.vpc[0].outputs.public-subnet-az1
-    : var.subnet_ids["public-subnet-az1"]
-  )
-  public-subnet-az2 = (
-    local.subnets_are_unspecified
-    ? data.terraform_remote_state.vpc[0].outputs.public-subnet-az2
-    : var.subnet_ids["public-subnet-az2"]
-  )
-}
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.0"
 
-resource "aws_eks_cluster" "cluster" {
-  name     = var.project_name
-  role_arn = aws_iam_role.eks-cluster.arn
-  # version  = "1.31"   # If not specified, the latest available version is used
+  cluster_name = local.name
+  # cluster_version = "1.31" # Use latest
 
-  vpc_config {
+  # Gives Terraform identity admin access to cluster which will
+  # allow deploying resources (Karpenter) into the cluster
+  enable_cluster_creator_admin_permissions = true
+  cluster_endpoint_public_access           = true
 
-    endpoint_private_access = false
-    endpoint_public_access  = true
-    public_access_cidrs     = ["0.0.0.0/0"]
-
-    subnet_ids = [
-      local.private-subnet-az1,
-      local.private-subnet-az2,
-      local.public-subnet-az1,
-      local.public-subnet-az2,
-    ]
+  cluster_addons = {
+    coredns                = {}
+    eks-pod-identity-agent = {}
+    kube-proxy             = {}
+    vpc-cni                = {}
   }
 
-  depends_on = [aws_iam_role_policy_attachment.amazon-eks-cluster-policy]
+  vpc_id = (
+    local.network_is_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.vpc_id
+    : local.vpc_id
+  )
+  subnet_ids = (
+    local.network_is_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.private_subnets
+    : local.private_subnets
+  )
+  control_plane_subnet_ids = (
+    local.network_is_unspecified
+    ? data.terraform_remote_state.vpc[0].outputs.intra_subnets
+    : local.intra_subnets
+  )
 
+  eks_managed_node_groups = {
+    karpenter = {
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["t3.small"]
+
+      min_size     = 0
+      max_size     = 3
+      desired_size = 1
+
+      taints = {
+        # This Taint aims to keep just EKS Addons and Karpenter running on this MNG
+        # The pods that do not tolerate this taint should run on nodes created by Karpenter
+        addons = {
+          key    = "CriticalAddonsOnly"
+          value  = "true"
+          effect = "NO_SCHEDULE"
+        },
+      }
+    }
+  }
+
+  # cluster_tags = merge(local.tags, {
+  #   NOTE - only use this option if you are using "attach_cluster_primary_security_group"
+  #   and you know what you're doing. In this case, you can remove the "node_security_group_tags" below.
+  #  "karpenter.sh/discovery" = local.name
+  # })
+
+  node_security_group_tags = merge(local.tags, {
+    # NOTE - if creating multiple security groups with this module, only tag the
+    # security group that Karpenter should utilize with the following tag
+    # (i.e. - at most, only one security group should have this tag in your account)
+    "karpenter.sh/discovery" = local.name
+  })
+
+  tags = local.tags
+}
+
+################################################################################
+# Karpenter
+################################################################################
+
+resource "null_resource" "update_kubeconfig" {
   provisioner "local-exec" {
     command = <<EOT
-      aws eks update-kubeconfig \
-          --region ${var.aws_region} \
-          --name ${aws_eks_cluster.cluster.name} \
-          --profile ${var.aws_profile}
+      aws eks update-kubeconfig --region ${local.region} --name ${local.name}
     EOT
   }
+  triggers = { cluster_id = module.eks.cluster_id }
+
+  depends_on = [module.eks]
 }
 
-# Nodes
-resource "aws_iam_role" "nodes" {
-  name = "eks-node-group"
+module "karpenter" {
+  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version = "~> 20.0"
 
-  assume_role_policy = jsonencode({
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-    }]
-    Version = "2012-10-17"
-  })
-}
+  cluster_name = module.eks.cluster_name
 
-resource "aws_iam_role_policy_attachment" "amazon-eks-worker-node-policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-  role       = aws_iam_role.nodes.name
-}
+  enable_v1_permissions = true
 
-resource "aws_iam_role_policy_attachment" "amazon-eks-cni-policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-  role       = aws_iam_role.nodes.name
-}
+  enable_pod_identity             = true
+  create_pod_identity_association = true
 
-resource "aws_iam_role_policy_attachment" "amazon-ec2-container-registry-read-only" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-  role       = aws_iam_role.nodes.name
-}
-
-resource "aws_eks_node_group" "private-nodes" {
-  cluster_name    = aws_eks_cluster.cluster.name
-  node_group_name = "private-nodes"
-  node_role_arn   = aws_iam_role.nodes.arn
-  # version         = "1.31" # Defaults to EKS Cluster Kubernetes version.
-
-  subnet_ids = [
-    local.private-subnet-az1,
-    local.private-subnet-az2,
-  ]
-
-  capacity_type  = "ON_DEMAND"
-  instance_types = ["t3.small"]
-
-  scaling_config {
-    desired_size = 1
-    max_size     = 10
-    min_size     = 0
+  # Used to attach additional IAM policies to the Karpenter node IAM role
+  node_iam_role_additional_policies = {
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   }
 
-  update_config {
-    max_unavailable = 1
-  }
-
-  labels = {
-    role = "general"
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.amazon-eks-worker-node-policy,
-    aws_iam_role_policy_attachment.amazon-eks-cni-policy,
-    aws_iam_role_policy_attachment.amazon-ec2-container-registry-read-only,
-  ]
-
-  # Allow external changes without Terraform plan difference
-  lifecycle {
-    ignore_changes = [scaling_config[0].desired_size]
-  }
+  tags = local.tags
 }
 
-# OpenID Connect provider
-data "tls_certificate" "eks" {
-  url = aws_eks_cluster.cluster.identity[0].oidc[0].issuer
-}
+################################################################################
+# Karpenter Helm chart & manifests
+# Not required; just to demonstrate functionality of the sub-module
+################################################################################
 
-resource "aws_iam_openid_connect_provider" "eks" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
-  url             = aws_eks_cluster.cluster.identity[0].oidc[0].issuer
-}
-
-# Karpenter controller role
-data "aws_iam_policy_document" "karpenter_controller_assume_role_policy" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    effect  = "Allow"
-
-    condition {
-      test     = "StringEquals"
-      variable = "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub"
-      values   = ["system:serviceaccount:karpenter:karpenter"]
-    }
-
-    principals {
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
-      type        = "Federated"
-    }
-  }
-}
-
-resource "aws_iam_role" "karpenter_controller" {
-  assume_role_policy = data.aws_iam_policy_document.karpenter_controller_assume_role_policy.json
-  name               = "karpenter-controller"
-}
-
-resource "aws_iam_policy" "karpenter_controller" {
-  policy = file("./controller-trust-policy.json")
-  name   = "KarpenterController"
-}
-
-resource "aws_iam_role_policy_attachment" "aws_load_balancer_controller_attach" {
-  role       = aws_iam_role.karpenter_controller.name
-  policy_arn = aws_iam_policy.karpenter_controller.arn
-}
-
-resource "aws_iam_instance_profile" "karpenter" {
-  name = "KarpenterNodeInstanceProfile"
-  role = aws_iam_role.nodes.name
-}
-
-# Karpenter Helm
 resource "helm_release" "karpenter" {
-  namespace        = "karpenter"
-  create_namespace = true
+  namespace           = "kube-system"
+  name                = "karpenter"
+  repository          = "oci://public.ecr.aws/karpenter"
+  repository_username = data.aws_ecrpublic_authorization_token.token.user_name
+  repository_password = data.aws_ecrpublic_authorization_token.token.password
+  chart               = "karpenter"
+  # version             = "1.0.8" # Use latest
+  wait = false
 
-  name       = "karpenter"
-  repository = "https://charts.karpenter.sh"
-  chart      = "karpenter"
-  # version    = "v0.16.3" # If this is not specified, the latest version is installed.
+  values = [
+    <<-EOT
+    serviceAccount:
+      name: ${module.karpenter.service_account}
+    settings:
+      clusterName: ${module.eks.cluster_name}
+      clusterEndpoint: ${module.eks.cluster_endpoint}
+      interruptionQueue: ${module.karpenter.queue_name}
+    EOT
+  ]
 
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.karpenter_controller.arn
-  }
-
-  set {
-    name  = "clusterName"
-    value = aws_eks_cluster.cluster.id
-  }
-
-  set {
-    name  = "clusterEndpoint"
-    value = aws_eks_cluster.cluster.endpoint
-  }
-
-  set {
-    name  = "aws.defaultInstanceProfile"
-    value = aws_iam_instance_profile.karpenter.name
-  }
-
-  depends_on = [aws_eks_node_group.private-nodes]
+  depends_on = [null_resource.update_kubeconfig]
 }
 
-resource "helm_release" "karpenter-provisioner" {
-  name  = "karpenter-provisioner"
-  chart = "./karpenter-provisioner-chart"
+resource "kubectl_manifest" "karpenter_node_class" {
+  yaml_body = <<-YAML
+    apiVersion: karpenter.k8s.aws/v1
+    kind: EC2NodeClass
+    metadata:
+      name: default
+    spec:
+      amiSelectorTerms:
+      - alias: al2023@latest
+      role: ${module.karpenter.node_iam_role_name}
+      subnetSelectorTerms:
+        - tags:
+            karpenter.sh/discovery: ${module.eks.cluster_name}
+      securityGroupSelectorTerms:
+        - tags:
+            karpenter.sh/discovery: ${module.eks.cluster_name}
+      tags:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+  YAML
 
   depends_on = [helm_release.karpenter]
+}
+
+resource "kubectl_manifest" "karpenter_node_pool" {
+  yaml_body = <<-YAML
+    apiVersion: karpenter.sh/v1
+    kind: NodePool
+    metadata:
+      name: default
+    spec:
+      template:
+        spec:
+          nodeClassRef:
+            group: karpenter.k8s.aws
+            kind: EC2NodeClass
+            name: default
+          requirements:
+            - key: "kubernetes.io/arch"
+              operator: In
+              values: ["arm64", "amd64"]
+            - key: "karpenter.k8s.aws/instance-family"
+              operator: In
+              values: ["t4g", "t3"]
+            - key: "karpenter.k8s.aws/instance-cpu"
+              operator: In
+              values: ["1", "2"]
+            - key: "karpenter.k8s.aws/instance-hypervisor"
+              operator: In
+              values: ["nitro"]
+            - key: karpenter.sh/capacity-type
+              operator: In
+              values: ["spot", "on-demand"]
+      limits:
+        cpu: 1000
+      disruption:
+        consolidationPolicy: WhenEmpty
+        consolidateAfter: 30s
+        expireAfter: 720h # 1 month
+  YAML
+
+  depends_on = [kubectl_manifest.karpenter_node_class]
 }
