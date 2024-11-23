@@ -87,6 +87,9 @@ this, the general approach remains consistent, involving the following steps:
 4. Deploy user applications requiring GPUs, ensuring the appropriate `nodeSelector` and
    `tolerations` are applied for proper scheduling on the GPU instances.
 
+This approach could serve as a solid starting point for further hands-on experimentation with this
+topic.
+
 ### References:
 - [Time-Slicing GPUs with Karpenter](https://dev.to/aws/time-slicing-gpus-with-karpenter-43nn)
 - [k8s-device-plugin](https://github.com/NVIDIA/k8s-device-plugin)
