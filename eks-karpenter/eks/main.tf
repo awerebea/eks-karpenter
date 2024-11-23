@@ -257,7 +257,7 @@ resource "kubectl_manifest" "karpenter_node_pool" {
       limits:
         cpu: 1000
       disruption:
-        consolidationPolicy: WhenEmpty
+        consolidationPolicy: WhenEmptyOrUnderutilized
         consolidateAfter: 30s
         expireAfter: 720h # 1 month
   YAML
