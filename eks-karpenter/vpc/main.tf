@@ -1,11 +1,5 @@
 provider "aws" {
   region = local.region
-  default_tags {
-    tags = {
-      project    = local.name
-      managed_by = "Terraform"
-    }
-  }
 }
 
 data "aws_availability_zones" "available" {}
@@ -17,7 +11,10 @@ locals {
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 2)
 
-  tags = {} # Use AWS provider default_tags instead to tag all taggable resources
+  tags = {
+    project    = local.name
+    managed_by = "Terraform"
+  }
 }
 
 module "vpc" {

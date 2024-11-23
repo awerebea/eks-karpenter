@@ -1,11 +1,5 @@
 provider "aws" {
   region = local.region
-  default_tags {
-    tags = {
-      project    = local.name
-      managed_by = "Terraform"
-    }
-  }
 }
 
 provider "aws" {
@@ -42,9 +36,8 @@ provider "kubectl" {
 }
 
 data "aws_availability_zones" "available" {}
-data "aws_ecrpublic_authorization_token" "token" {
-  provider = aws.virginia
-}
+data "aws_ecrpublic_authorization_token" "token" { provider = aws.virginia }
+data "aws_caller_identity" "current" {}
 
 locals {
   name   = "opsfleet-assignment"
@@ -54,13 +47,20 @@ locals {
   vpc_id          = ""
   private_subnets = []
   intra_subnets   = []
+
+  # If VPC data is left empty, a remote state bucket must be specified.
+  vpc_remote_state_bucket = "terraform-states-opsfleet-assignment-${
+    data.aws_caller_identity.current.account_id
+  }-us-east-2"
+
   network_is_unspecified = (
-    local.vpc_id == "" ||
-    length(local.private_subnets) == 0 ||
-    length(local.intra_subnets) == 0
+    local.vpc_id == "" || length(local.private_subnets) == 0 || length(local.intra_subnets) == 0
   )
 
-  tags = {} # Use AWS provider default_tags instead to tag all taggable resources
+  tags = {
+    project    = local.name
+    managed_by = "Terraform"
+  }
 }
 
 ################################################################################
@@ -68,12 +68,12 @@ locals {
 ################################################################################
 
 # VPC resources are expected to exist prior to deploying this Terraform module.
-# Use subnet IDs from the provided variable, or fallback to remote state data if not specified.
+# Use subnet IDs from the provided locals, or fallback to remote state data if not specified.
 data "terraform_remote_state" "vpc" {
   count   = local.network_is_unspecified ? 1 : 0
   backend = "s3"
   config = {
-    bucket = "terraform-states-opsfleet-assignment-495599757520-us-east-2"
+    bucket = local.vpc_remote_state_bucket
     key    = "vpc/terraform.tfstate"
     region = local.region
   }
@@ -155,17 +155,6 @@ module "eks" {
 # Karpenter
 ################################################################################
 
-resource "null_resource" "update_kubeconfig" {
-  provisioner "local-exec" {
-    command = <<EOT
-      aws eks update-kubeconfig --region ${local.region} --name ${local.name}
-    EOT
-  }
-  triggers = { cluster_id = module.eks.cluster_id }
-
-  depends_on = [module.eks]
-}
-
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
   version = "~> 20.0"
@@ -187,7 +176,6 @@ module "karpenter" {
 
 ################################################################################
 # Karpenter Helm chart & manifests
-# Not required; just to demonstrate functionality of the sub-module
 ################################################################################
 
 resource "helm_release" "karpenter" {
@@ -211,7 +199,7 @@ resource "helm_release" "karpenter" {
     EOT
   ]
 
-  depends_on = [null_resource.update_kubeconfig]
+  depends_on = [module.eks]
 }
 
 resource "kubectl_manifest" "karpenter_node_class" {
@@ -275,4 +263,17 @@ resource "kubectl_manifest" "karpenter_node_pool" {
   YAML
 
   depends_on = [kubectl_manifest.karpenter_node_class]
+}
+
+# Update the kubeconfig after deploying EKS to enable local machine access to the cluster for
+# subsequent manual deployments.
+resource "null_resource" "update_kubeconfig" {
+  provisioner "local-exec" {
+    command = <<EOT
+      aws eks update-kubeconfig --region ${local.region} --name ${local.name}
+    EOT
+  }
+  triggers = { cluster_id = module.eks.cluster_id }
+
+  depends_on = [kubectl_manifest.karpenter_node_pool]
 }
