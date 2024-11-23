@@ -39,7 +39,7 @@ Additionally, ensure that the required environment variables are exported to gra
 1. Navigate to the `./terraform_backend/` directory and update the `main.tf` file with the following details:
    ```terraform
    locals {
-     bucket   = "terraform-states-opsfleet-assignment-495599757520-us-east-2"
+     bucket   = "my-tfstate-bucket"
      dynamodb = "terraform-state-lock"
      project  = "opsfleet-assignment"
    }
@@ -49,10 +49,10 @@ Additionally, ensure that the required environment variables are exported to gra
    terraform init
    terraform apply
    ```
-   
+
 #### II. Deploy VPC-related Resources (Optional)
 
-1. Navigate to the `./vpc/` directory and update the backend.tf file with the terraform_backend configuration.
+1. Navigate to the `./vpc/` directory and update the `backend.tf` file with the `terraform_backend` configuration.
 2. In the `main.tf` file, update the `locals` block with the appropriate values for your environment.
 3. Initialize Terraform and deploy the VPC resources:
    ```sh
@@ -61,7 +61,7 @@ Additionally, ensure that the required environment variables are exported to gra
    ```
 
 #### III. Deploy EKS Cluster with Karpenter Autoscaler
-1. Navigate to the `./eks/` directory and update the backend.tf file to reflect the terraform_backend configuration.
+1. Navigate to the `./eks/` directory and update the `backend.tf` file to reflect the `terraform_backend` configuration.
 2. In the `main.tf` file, update the `locals` block with the appropriate values for your environment.
    If you're using an existing VPC (bypassing Step II), specify the VPC and subnet IDs in this block as shown in the example below:
    ```terraform
@@ -70,6 +70,14 @@ Additionally, ensure that the required environment variables are exported to gra
      vpc_id          = "vpc-0123456789abcdef0"
      private_subnets = ["subnet-0123456789abcdef1", "subnet-0123456789abcdef2"]
      intra_subnets   = ["subnet-0123456789abcdef3", "subnet-0123456789abcdef4"]
+     ...
+   }
+   ```
+   Otherwise, `vpc_remote_state_bucket` must be specified:
+   ```terraform
+   locals {
+     ...
+     vpc_remote_state_bucket = "my-tfstate-bucket"
      ...
    }
    ```
